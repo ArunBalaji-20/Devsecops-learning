@@ -1,0 +1,85 @@
+# Checkov baseline for this project. Every ID below was reviewed by hand
+# (run `checkov -d terraform` with no config file to see them un-suppressed)
+# and is skipped for a stated reason — this is NOT "silence everything",
+# it's the normal shape of a checkov baseline in a real team: findings
+# get triaged once, the reasoning gets written down, and the noise
+# doesn't come back on every PR. When you change the infra, re-run
+# without this file occasionally to see what's newly uncovered.
+#
+# Usage: checkov -d terraform --config-file .checkov.yaml
+
+directory:
+  - terraform
+
+skip-check:
+  # --- HTTP-only ALB: no domain name / ACM cert in this "simple project" ---
+  # (see terraform/alb.tf for the documented upgrade path to HTTPS)
+  - CKV_AWS_2     # ALB listener protocol should be HTTPS
+  - CKV_AWS_103   # ALB should use at least TLS 1.2
+  - CKV_AWS_378   # target group forwards over HTTP
+  - CKV2_AWS_20   # ALB should redirect HTTP -> HTTPS
+  - CKV_AWS_131   # ALB should drop invalid HTTP headers (pairs with HTTPS hardening)
+  - CKV_AWS_150   # ALB deletion protection (learning project — you want to `terraform destroy` easily)
+  - CKV_AWS_91    # ALB access logging (needs an S3 bucket + lifecycle policy; adds cost/complexity)
+  - CKV2_AWS_28   # ALB behind WAF ($5+/mo minimum, out of scope here)
+
+  # --- no NAT Gateway: Fargate tasks sit in public subnets on purpose ---
+  # (saves ~$32/mo; see the public_subnet_cidrs description in
+  # terraform/variables.tf for the production alternative)
+  - CKV_AWS_130   # public subnets auto-assign public IPs
+  - CKV_AWS_333   # ECS service tasks get public IPs
+
+  # --- default (AWS-managed) encryption keys instead of customer-managed KMS CMKs ---
+  # AES256/AWS-managed KMS is still encryption at rest; a CMK mainly buys
+  # you audit-trail-per-key-use and cross-account key policies, neither
+  # of which matters for a single-account learning project.
+  - CKV_AWS_136   # ECR repo encryption
+  - CKV_AWS_158   # CloudWatch Log Group encryption (app logs + VPC flow logs)
+  - CKV_AWS_149   # Secrets Manager secret encryption
+
+  # --- cost/complexity trade-offs on RDS, all reversible via variables.tf ---
+  - CKV_AWS_293   # deletion protection off (want easy `terraform destroy` while learning)
+  - CKV_AWS_157   # Multi-AZ off by default (var.db_multi_az — flip it on)
+  - CKV_AWS_353   # Performance Insights (small extra cost, off by default)
+  - CKV_AWS_118   # Enhanced Monitoring (small extra cost, off by default)
+  - CKV_AWS_129   # log exports to CloudWatch (adds volume/cost; app doesn't need query-level logs day one)
+  - CKV2_AWS_30   # Postgres query logging (same as above)
+  - CKV_AWS_161   # IAM database authentication — this project uses Secrets-Manager-managed
+                   # password auth instead (manage_master_user_password), which is the
+                   # other AWS-recommended pattern and is what's actually wired up.
+  - CKV2_AWS_57   # Secrets Manager automatic rotation — the RDS master password CAN be
+                   # rotated (it's AWS-managed), but rotating FLASK_SECRET_KEY would
+                   # invalidate every logged-in session; add rotation only alongside
+                   # proper session invalidation handling.
+
+  # --- ECR tag mutability: required for the CD pipeline's bootstrap flow ---
+  # See the comment on aws_ecr_repository.app in terraform/ecr.tf.
+  - CKV_AWS_51
+
+  # --- ECS Container Insights: real extra CloudWatch cost, off by default ---
+  - CKV_AWS_65
+
+  # --- log retention: 14 days (var.log_retention_days), not 1 year ---
+  # A year of logs for a personal learning project is mostly cost with no
+  # benefit; raise the variable if you want longer retention.
+  - CKV_AWS_338
+
+  # --- security group egress: intentionally open outbound ---
+  # Ingress is what's tightly scoped here (ALB<-internet:80 only,
+  # ECS<-ALB only, RDS<-ECS only — see security_groups.tf). Locking down
+  # egress to exact AWS service IP ranges (ECR, Secrets Manager,
+  # CloudWatch) is real hardening but heavy for a learning project.
+  - CKV_AWS_260
+  - CKV_AWS_382
+
+  # --- bootstrap IAM policy: broad by design, see terraform/bootstrap/main.tf ---
+  # The mitigating control is the OIDC trust policy: this role can ONLY be
+  # assumed by GitHub Actions runs on this one repo's main branch, not by
+  # anything else. Splitting this into a narrow "plan" role and a
+  # separately-approved "apply" role is the natural next step — noted in
+  # README.md as a deliberate future improvement, not an oversight.
+  - CKV_AWS_111
+  - CKV_AWS_356
+  - CKV_AWS_108
+  - CKV_AWS_109
+  - CKV_AWS_107

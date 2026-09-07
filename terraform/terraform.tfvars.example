@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars and adjust. terraform.tfvars is git-ignored —
+# it's fine to put real (non-secret) values in it; there are no
+# credentials in here, just infra shape.
+
+aws_region   = "us-east-1"
+project_name = "devsecops-notes"
+environment  = "dev"
+
+desired_count = 1

@@ -1,0 +1,32 @@
+version: 2
+updates:
+  # Python dependencies (requirements.txt / requirements-dev.txt)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "python"]
+
+  # Base images referenced in the Dockerfile
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "docker"]
+
+  # The GitHub Actions used in the workflows themselves — this is what
+  # keeps the pinned action versions in ci.yml/cd.yml/dast.yml (gitleaks,
+  # trivy, checkov, etc.) from silently going stale.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "github-actions"]
+
+  # Terraform providers
+  - package-ecosystem: "terraform"
+    directory: "/terraform"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "terraform"]

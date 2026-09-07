@@ -1,0 +1,231 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch/PR.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: devsecops-notes-app
+
+jobs:
+  # ---------------------------------------------------------------------
+  # 1. Lint + unit tests. Everything else in this file is security
+  #    tooling; this job is "does the app actually work".
+  # ---------------------------------------------------------------------
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Unit tests (pytest, sqlite in-memory)
+        env:
+          FLASK_ENV: testing
+        run: pytest
+
+  # ---------------------------------------------------------------------
+  # 2. Secrets scanning — catches committed API keys, tokens, private
+  #    keys, etc. Runs on the full git history of the push/PR, not just
+  #    the working tree, so a secret added then "removed" in a later
+  #    commit still gets caught.
+  # ---------------------------------------------------------------------
+  secrets-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Only required if this repo lives under a GitHub Organization
+          # AND you're scanning more than one repo in it — gitleaks-action
+          # is free for personal accounts and single-repo orgs. If CI
+          # fails here asking for a license, either add GITLEAKS_LICENSE
+          # as a repo secret, or swap this step for the plain OSS CLI:
+          #   docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
+          #     detect --source /repo --report-format sarif \
+          #     --report-path gitleaks-report.sarif --exit-code 1
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  # ---------------------------------------------------------------------
+  # 3. SAST — Semgrep, scanning the app's own Python code for real
+  #    vulnerability patterns (SQL injection, SSRF, unsafe
+  #    deserialization, etc.), not just style. Results go to the repo's
+  #    Security tab as well as failing the build.
+  #
+  #    To add SonarQube/SonarCloud alongside this later: create a
+  #    sonar-project.properties (one is already included in this repo),
+  #    add a SONAR_TOKEN secret, and uncomment the job at the bottom of
+  #    this file.
+  # ---------------------------------------------------------------------
+  sast-semgrep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install semgrep==1.176.1
+
+      - name: Run semgrep
+        id: semgrep
+        run: |
+          semgrep scan \
+            --config=p/ci \
+            --config=p/security-audit \
+            --config=p/python \
+            --config=p/flask \
+            --sarif --output=semgrep-results.sarif \
+            --error
+        continue-on-error: true
+
+      - name: Upload SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+      - name: Fail the job if semgrep found blocking issues
+        if: steps.semgrep.outcome == 'failure'
+        run: exit 1
+
+  # ---------------------------------------------------------------------
+  # 4. Dependency scanning — known CVEs in requirements.txt. Dependabot
+  #    (.github/dependabot.yml) complements this by opening PRs to bump
+  #    vulnerable packages automatically; this job is the CI gate that
+  #    catches a vulnerable dependency the moment it's introduced.
+  # ---------------------------------------------------------------------
+  dependency-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pip-audit==2.10.1
+
+      - name: pip-audit
+        run: pip-audit -r requirements.txt --strict
+
+  # ---------------------------------------------------------------------
+  # 5. Build the container image, then scan IT (not just the source) —
+  #    this catches vulnerable OS packages in the base image, which
+  #    source-level dependency scanning above can't see at all.
+  # ---------------------------------------------------------------------
+  build-and-scan-image:
+    runs-on: ubuntu-latest
+    needs: [lint-and-test]
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image (loaded into local docker, not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:ci
+
+      - name: Trivy — scan the image for OS + dependency CVEs
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:ci
+          format: sarif
+          output: trivy-results.sarif
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
+
+      - name: Upload SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-container
+
+  # ---------------------------------------------------------------------
+  # 6. IaC scanning — Checkov against the Terraform. .checkov.yaml in
+  #    the repo root documents (and skips) the findings that are
+  #    deliberate trade-offs for this project; everything else fails
+  #    the build.
+  # ---------------------------------------------------------------------
+  iac-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkov
+        id: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform
+          config_file: .checkov.yaml
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+          soft_fail: false
+          skip_results_upload: true # local/CI-only — no Bridgecrew/Prisma Cloud account needed
+
+      - name: Upload SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: checkov-results.sarif
+          category: checkov-iac
+
+  # ---------------------------------------------------------------------
+  # Future: SonarQube/SonarCloud SAST + code-quality alongside Semgrep.
+  # Uncomment once you have SONAR_TOKEN set as a repo secret and (if
+  # self-hosting) SONAR_HOST_URL too. sonar-project.properties is
+  # already in the repo root and ready to go.
+  # ---------------------------------------------------------------------
+  # sonarqube:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0 # SonarQube wants full history for blame info
+  #     - uses: SonarSource/sonarqube-scan-action@v4
+  #       env:
+  #         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  #         SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }} # omit this line if using SonarCloud
