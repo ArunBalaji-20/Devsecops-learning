@@ -27,25 +27,26 @@ delete notes). The point of this project is everything *around* it.
 ## Architecture
 
 ```
-                         ┌─────────────────────────────────────┐
-  GitHub Actions         │              AWS (us-east-1)         │
-  ─────────────          │                                       │
-  ci.yml (every PR)      │   Internet                            │
-    lint+test             │      │                                 │
-    secrets scan          │      ▼                                 │
-    SAST (semgrep)         │   ALB :80  (public subnets)            │
-    dependency scan        │      │                                 │
-    build+scan image       │      ▼                                 │
-    IaC scan (checkov)     │   ECS Fargate task (public subnets,     │
-                            │     no NAT Gateway — see below)         │
-  cd.yml (main, after CI) │      │           │                        │
-    terraform apply       │      ▼           ▼                        │
-    build, scan, push     │   RDS Postgres  Secrets Manager           │
-    → ECR                 │   (private      (FLASK_SECRET_KEY,        │
-    ECS deploy             │    subnets,      RDS master password)     │
-                            │    no NAT)                                │
-  dast.yml (post-deploy)   │                                            │
-    OWASP ZAP baseline →   │──────────────────────────────────────────┘
+                           ┌────────────────────────────────────-------
+  GitHub Actions           │              AWS (us-east-1)             │
+  ─────────────            │                                          │
+  ci.yml (every PR)        │   Internet                               │
+    lint+test              │      │                                   │
+    secrets scan           │      ▼                                   │
+    SAST (semgrep)         │   ALB :80  (public subnets)              │
+    dependency scan        │      │                                   │
+    build+scan image       │      ▼                                   │
+    IaC scan (checkov)     │   ECS Fargate task (public subnets,      │
+                           │     no NAT Gateway — see below)          │
+  cd.yml (main, after CI)  │      │           │                       │
+    terraform apply        │      ▼           ▼                       │
+    build, scan, push      │   RDS Postgres  Secrets Manager          │
+    → ECR                  │   (private      (FLASK_SECRET_KEY,       │
+    ECS deploy             │    subnets,      RDS master password)    │
+                           │    no NAT)                               │
+  dast.yml (post-deploy)   │                                          │
+    OWASP ZAP baseline →   │
+                            ──────────────────────────────────────────┘
     scans the live ALB URL
 ```
 

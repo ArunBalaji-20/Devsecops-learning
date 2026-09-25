@@ -9,6 +9,8 @@ instance/
 .coverage
 htmlcov/
 .ruff_cache/
+.env.example
+.env.*
 
 # Terraform
 terraform/.terraform/
