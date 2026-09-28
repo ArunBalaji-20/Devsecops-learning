@@ -1,111 +1,111 @@
-name: CD (deploy to AWS)
+# name: CD (deploy to AWS)
 
-# Runs only after CI has fully passed on main — see the `workflow_run`
-# trigger below — plus a manual button for re-running a deploy without
-# a new commit (e.g. after fixing an AWS-side issue).
-on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [main]
-  workflow_dispatch: {}
+# # Runs only after CI has fully passed on main — see the `workflow_run`
+# # trigger below — plus a manual button for re-running a deploy without
+# # a new commit (e.g. after fixing an AWS-side issue).
+# on:
+#   workflow_run:
+#     workflows: ["CI"]
+#     types: [completed]
+#     branches: [main]
+#   workflow_dispatch: {}
 
-concurrency:
-  group: cd-deploy
-  cancel-in-progress: false # never cancel a deploy mid-flight
+# concurrency:
+#   group: cd-deploy
+#   cancel-in-progress: false # never cancel a deploy mid-flight
 
-permissions:
-  contents: read
-  id-token: write # required for OIDC -> AWS (no long-lived access keys anywhere)
+# permissions:
+#   contents: read
+#   id-token: write # required for OIDC -> AWS (no long-lived access keys anywhere)
 
-env:
-  AWS_REGION: us-east-1
-  TF_VAR_aws_region: us-east-1
+# env:
+#   AWS_REGION: us-east-1
+#   TF_VAR_aws_region: us-east-1
 
-jobs:
-  deploy:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-latest
-    environment: production # set this up under Settings > Environments to require manual approval before this job runs
-    defaults:
-      run:
-        working-directory: terraform
-    steps:
-      - uses: actions/checkout@v4
+# jobs:
+#   deploy:
+#     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+#     runs-on: ubuntu-latest
+#     environment: production # set this up under Settings > Environments to require manual approval before this job runs
+#     defaults:
+#       run:
+#         working-directory: terraform
+#     steps:
+#       - uses: actions/checkout@v4
 
-      - name: Require a remote Terraform backend
-        # Without this, every run starts from empty state and either
-        # tries to recreate everything or fights the last run. See
-        # terraform/backend.tf.example and README.md's AWS setup section
-        # — this is a one-time step you run locally, before the first
-        # deploy, alongside the OIDC bootstrap.
-        run: |
-          if [ ! -f backend.tf ]; then
-            echo "::error::terraform/backend.tf is missing. Copy backend.tf.example, fill in your state bucket, and commit it before CD can run. See README.md."
-            exit 1
-          fi
+#       - name: Require a remote Terraform backend
+#         # Without this, every run starts from empty state and either
+#         # tries to recreate everything or fights the last run. See
+#         # terraform/backend.tf.example and README.md's AWS setup section
+#         # — this is a one-time step you run locally, before the first
+#         # deploy, alongside the OIDC bootstrap.
+#         run: |
+#           if [ ! -f backend.tf ]; then
+#             echo "::error::terraform/backend.tf is missing. Copy backend.tf.example, fill in your state bucket, and commit it before CD can run. See README.md."
+#             exit 1
+#           fi
 
-      - name: Configure AWS credentials (OIDC — no stored access keys)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+#       - name: Configure AWS credentials (OIDC — no stored access keys)
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+#           aws-region: ${{ env.AWS_REGION }}
 
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.9.8"
-          terraform_wrapper: false
+#       - uses: hashicorp/setup-terraform@v3
+#         with:
+#           terraform_version: "1.9.8"
+#           terraform_wrapper: false
 
-      - name: terraform init
-        run: terraform init -input=false
+#       - name: terraform init
+#         run: terraform init -input=false
 
-      # --- phase 1: make sure the ECR repo exists before we try to push to it ---
-      - name: terraform apply (ECR only)
-        run: terraform apply -input=false -auto-approve -target=aws_ecr_repository.app
+#       # --- phase 1: make sure the ECR repo exists before we try to push to it ---
+#       - name: terraform apply (ECR only)
+#         run: terraform apply -input=false -auto-approve -target=aws_ecr_repository.app
 
-      - name: Get ECR repository URL
-        id: ecr
-        run: echo "url=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_OUTPUT"
+#       - name: Get ECR repository URL
+#         id: ecr
+#         run: echo "url=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_OUTPUT"
 
-      # --- build, scan again (defense in depth — same gate as ci.yml), push ---
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: ecr-login
+#       # --- build, scan again (defense in depth — same gate as ci.yml), push ---
+#       - uses: aws-actions/amazon-ecr-login@v2
+#         id: ecr-login
 
-      - uses: docker/setup-buildx-action@v3
+#       - uses: docker/setup-buildx-action@v3
 
-      - name: Build image
-        uses: docker/build-push-action@v6
-        with:
-          # NOT affected by `defaults.run.working-directory: terraform`
-          # above — that only applies to `run:` steps. The Dockerfile is
-          # at the repo root, so this context is too.
-          context: .
-          push: false
-          load: true
-          tags: ${{ steps.ecr.outputs.url }}:${{ github.sha }}
+#       - name: Build image
+#         uses: docker/build-push-action@v6
+#         with:
+#           # NOT affected by `defaults.run.working-directory: terraform`
+#           # above — that only applies to `run:` steps. The Dockerfile is
+#           # at the repo root, so this context is too.
+#           context: .
+#           push: false
+#           load: true
+#           tags: ${{ steps.ecr.outputs.url }}:${{ github.sha }}
 
-      - name: Trivy — re-scan before pushing to the registry
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ steps.ecr.outputs.url }}:${{ github.sha }}
-          severity: "CRITICAL,HIGH"
-          exit-code: "1"
+#       - name: Trivy — re-scan before pushing to the registry
+#         uses: aquasecurity/trivy-action@v0.36.0
+#         with:
+#           image-ref: ${{ steps.ecr.outputs.url }}:${{ github.sha }}
+#           severity: "CRITICAL,HIGH"
+#           exit-code: "1"
 
-      - name: Push image to ECR
-        run: docker push ${{ steps.ecr.outputs.url }}:${{ github.sha }}
+#       - name: Push image to ECR
+#         run: docker push ${{ steps.ecr.outputs.url }}:${{ github.sha }}
 
-      # --- phase 2: full apply, pointing the ECS task definition at the image we just pushed ---
-      - name: terraform apply (full stack)
-        run: |
-          terraform apply -input=false -auto-approve \
-            -var="app_image_tag=${{ github.sha }}"
+#       # --- phase 2: full apply, pointing the ECS task definition at the image we just pushed ---
+#       - name: terraform apply (full stack)
+#         run: |
+#           terraform apply -input=false -auto-approve \
+#             -var="app_image_tag=${{ github.sha }}"
 
-      - name: Force a fresh deployment (picks up the new task definition)
-        run: |
-          CLUSTER=$(terraform output -raw ecs_cluster_name)
-          SERVICE=$(terraform output -raw ecs_service_name)
-          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --force-new-deployment --region "${{ env.AWS_REGION }}" >/dev/null
-          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE" --region "${{ env.AWS_REGION }}"
+#       - name: Force a fresh deployment (picks up the new task definition)
+#         run: |
+#           CLUSTER=$(terraform output -raw ecs_cluster_name)
+#           SERVICE=$(terraform output -raw ecs_service_name)
+#           aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --force-new-deployment --region "${{ env.AWS_REGION }}" >/dev/null
+#           aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE" --region "${{ env.AWS_REGION }}"
 
-      - name: Print app URL
-        run: terraform output app_url
+#       - name: Print app URL
+#         run: terraform output app_url
