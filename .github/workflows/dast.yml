@@ -37,7 +37,7 @@ jobs:
       # whatever's actually live from Terraform state.
       - name: Configure AWS credentials (OIDC, read-only use — just for `terraform output`)
         if: inputs.target_url == ''
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
