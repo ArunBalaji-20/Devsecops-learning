@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # --- builder stage: build a wheelhouse, keep build tools out of the final image ---
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 WORKDIR /build
 
@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 
 # --- runtime stage: small, no compilers, non-root ---
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 # libpq5 is the runtime client lib psycopg2 needs; libpq-dev/build-essential
 # from the builder stage are NOT copied into this image.
