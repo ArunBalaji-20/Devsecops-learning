@@ -11,6 +11,7 @@ htmlcov/
 .ruff_cache/
 .env.example
 .env.*
+*.env
 
 # Terraform
 terraform/.terraform/
