@@ -64,7 +64,7 @@ jobs:
           fi
 
       - name: OWASP ZAP baseline scan
-        uses: zaproxy/action-baseline@v0.12.0
+        uses: zaproxy/action-baseline@v0.15.0
         with:
           target: ${{ steps.target.outputs.url }}
           # ZAP's default rule severities would fail the build on
